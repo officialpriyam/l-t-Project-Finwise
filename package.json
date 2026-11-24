@@ -1,0 +1,58 @@
+{
+  "name": "finwise",
+  "version": "0.1.0",
+  "description": "Open-source, self-hostable AI financial operating system for personal and business finance — double-entry ledger, subscriptions, projects, payroll, net worth, forecasts.",
+  "license": "AGPL-3.0-only",
+  "author": "priyx",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/priyx/finwise.git"
+  },
+  "homepage": "https://github.com/priyx/finwise#readme",
+  "bugs": {
+    "url": "https://github.com/priyx/finwise/issues"
+  },
+  "keywords": [
+    "finance",
+    "personal-finance",
+    "accounting",
+    "expense-tracker",
+    "budgeting",
+    "double-entry",
+    "ledger",
+    "self-hosted",
+    "ai",
+    "nextjs",
+    "nestjs",
+    "postgresql",
+    "bkash"
+  ],
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @finwise/api --filter @finwise/web dev",
+    "build": "pnpm --filter @finwise/api build && pnpm --filter @finwise/web build",
+    "start": "pnpm --parallel --filter @finwise/api --filter @finwise/web start",
+    "worker": "pnpm --filter @finwise/api worker",
+    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "db:up": "docker compose up -d postgres",
+    "db:local": "node scripts/db/dev-db.mjs",
+    "db:generate": "pnpm --filter @finwise/api db:generate",
+    "db:migrate": "pnpm --filter @finwise/api db:migrate",
+    "db:seed": "pnpm --filter @finwise/api db:seed",
+    "desktop:dev": "pnpm --filter @finwise/desktop dev",
+    "desktop:build": "pnpm --filter @finwise/desktop build:msi"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "embedded-postgres": "19.0.0-beta.20",
+    "typescript": "7.0.2"
+  }
+}
