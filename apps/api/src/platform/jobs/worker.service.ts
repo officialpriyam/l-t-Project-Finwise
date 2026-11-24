@@ -32,23 +32,41 @@ export class WorkerService implements OnApplicationBootstrap, OnApplicationShutd
     if (this.timer) clearInterval(this.timer);
   }
 
-  /** One pass. Also callable from /api/system/tick for cron-driven hosts. */
+  private async pass(): Promise<{ events: number; jobs: number }> {
+    // At most once a minute: the admin panel shows when a worker was last alive.
+    await recordHeartbeat(this.jobs.workerId).catch((error: unknown) =>
+      this.logger.warn(`Heartbeat not recorded: ${error instanceof Error ? error.message : String(error)}`),
+    );
+    const events = await this.events.dispatchPending();
+    const jobs = await this.jobs.runDue();
+    return { events, jobs };
+  }
+
+  /** One resilient pass for the long-running polling loop and the legacy tick route. */
   async tick(): Promise<{ events: number; jobs: number }> {
     if (this.busy) return { events: 0, jobs: 0 };
     this.busy = true;
     try {
-      // At most once a minute: the admin panel shows when a worker was last alive.
-      await recordHeartbeat(this.jobs.workerId).catch((error: unknown) =>
-        this.logger.warn(`Heartbeat not recorded: ${error instanceof Error ? error.message : String(error)}`),
-      );
-      const events = await this.events.dispatchPending();
-      const jobs = await this.jobs.runDue();
-      return { events, jobs };
+      return await this.pass();
     } catch (error) {
       this.logger.error(error instanceof Error ? error.message : String(error));
       return { events: 0, jobs: 0 };
     } finally {
       this.busy = false;
     }
+  }
+
+  /** Drains the durable queue for a bounded cron invocation, surfacing infrastructure failures. */
+  async drain(maxMs = 240_000): Promise<{ events: number; jobs: number }> {
+    const deadline = Date.now() + maxMs;
+    let events = 0;
+    let jobs = 0;
+    while (Date.now() < deadline) {
+      const pass = await this.pass();
+      events += pass.events;
+      jobs += pass.jobs;
+      if (!pass.events && !pass.jobs) break;
+    }
+    return { events, jobs };
   }
 }

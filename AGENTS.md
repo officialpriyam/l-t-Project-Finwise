@@ -47,7 +47,7 @@ Ports 3100/4100 belong to the developer's own `pnpm dev`. Agents never start ser
   directory, so give yours its own:
 
   ```
-  cd apps/api && DATABASE_URL=<your own db> API_PORT=<api> APP_URL=http://localhost:<web> pnpm exec tsx src/main.ts
+  cd apps/api && DATABASE_URL=<your own db> API_PORT=<api> APP_URL=http://localhost:<web> pnpm exec tsx src/bootstrap/main.ts
   cd apps/web && NEXT_DIST_DIR=.next/port-<web> API_INTERNAL_URL=http://localhost:<api> \
     APP_URL=http://localhost:<web> pnpm exec next dev --port <web>
   ```
@@ -138,6 +138,10 @@ Ports 3100/4100 belong to the developer's own `pnpm dev`. Agents never start ser
   from Admin always runs. Error responses carry `requestId`; logs are JSON with
   `LOG_FORMAT=json`; errors go to `SENTRY_DSN` when set. Health: `/api/health`,
   `/api/health/ready` (fails while migrations are pending).
+- Vercel uses `src/main.ts` as the API function and must not start worker/scheduler
+  timers there. `EW_DISABLE_WORKER=1` disables them; Bearer-authenticated
+  `GET /api/system/cron` runs due schedules and drains the queue. Vercel storage
+  must be S3/R2, never the local driver (see docs/deploy.md).
 
 ## Schema
 

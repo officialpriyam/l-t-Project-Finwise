@@ -1,11 +1,11 @@
 import { SchedulerRegistry } from "@nestjs/schedule";
 import { eq, like } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { hit } from "../../src/domains/ops/rate-limit.js";
+import { RECEIVABLES_TASK } from "../../src/domains/wealth/wealth.jobs.js";
 import { db } from "../../src/platform/data/index.js";
 import { jobs, rateLimits, schedulerRuns } from "../../src/platform/data/schema/index.js";
 import { SchedulerService, slotFor } from "../../src/platform/jobs/scheduler.service.js";
-import { hit } from "../../src/domains/ops/rate-limit.js";
-import { RECEIVABLES_TASK } from "../../src/domains/wealth/wealth.jobs.js";
 import { createUser, resetDatabase, service, shutdown } from "./harness.js";
 
 // Several processes run the cron (API instances with the in-process worker,
@@ -54,6 +54,37 @@ describe("scheduler: one run per slot", () => {
     const next = new Date("2026-09-26T03:50:00.001Z");
     await Promise.all([a.runScheduled("ops.test", next), b.runScheduled("ops.test", next)]);
     expect(counter.runs).toBe(2);
+  });
+
+  it("runs only tasks due in the current minute and ignores duplicate deliveries", async () => {
+    const everyMinute = { runs: 0 };
+    const never = { runs: 0 };
+    const scheduler = new SchedulerService(new SchedulerRegistry());
+    scheduler.register("ops.every-minute", "* * * * *", "Every minute", async () => {
+      everyMinute.runs += 1;
+    });
+    scheduler.register("ops.never", "0 0 1 1 *", "Once a year", async () => {
+      never.runs += 1;
+    });
+    const now = new Date("2026-09-26T03:45:30.000Z");
+
+    expect(await scheduler.runDue(now)).toEqual(["ops.every-minute"]);
+    expect(await scheduler.runDue(new Date(now.getTime() + 1_000))).toEqual([]);
+    expect(everyMinute.runs).toBe(1);
+    expect(never.runs).toBe(0);
+  });
+
+  it("checks the previous minute when a request crosses an hourly boundary", async () => {
+    const counter = { runs: 0 };
+    const scheduler = new SchedulerService(new SchedulerRegistry());
+    scheduler.register("ops.hourly-boundary", "59 * * * *", "Previous minute", async () => {
+      counter.runs += 1;
+    });
+
+    expect(await scheduler.runDue(new Date("2026-09-26T10:00:00.010Z"))).toEqual(["ops.hourly-boundary"]);
+    expect(counter.runs).toBe(1);
+    const claims = await db.select().from(schedulerRuns).where(eq(schedulerRuns.name, "ops.hourly-boundary"));
+    expect(claims).toMatchObject([{ slot: new Date("2026-09-26T09:59:00.000Z") }]);
   });
 
   it("always runs a task started by hand (admin → Run now)", async () => {

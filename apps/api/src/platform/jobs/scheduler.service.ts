@@ -1,13 +1,13 @@
 import { hostname } from "node:os";
 import { Inject, Injectable, Logger, type OnApplicationBootstrap } from "@nestjs/common";
 import { SchedulerRegistry } from "@nestjs/schedule";
-import { CronJob } from "cron";
+import { CronJob, CronTime } from "cron";
 import { lt } from "drizzle-orm";
 import { db } from "../data/index.js";
 import { schedulerRuns, workspaces } from "../data/schema/index.js";
 import { runsWorker } from "./worker-mode.js";
 
-type Task = { name: string; cron: string; run: () => Promise<unknown>; description: string };
+type Task = { name: string; cron: string; schedule: CronTime; run: () => Promise<unknown>; description: string };
 
 /** A firing's slot: its scheduled time to the minute (UTC), the same on every instance. */
 export function slotFor(at: Date): Date {
@@ -39,17 +39,36 @@ export class SchedulerService implements OnApplicationBootstrap {
   constructor(@Inject(SchedulerRegistry) private readonly registry: SchedulerRegistry) {}
 
   register(name: string, cron: string, description: string, run: () => Promise<unknown>) {
-    this.tasks.set(name, { name, cron, run, description });
+    this.tasks.set(name, { name, cron, schedule: new CronTime(cron, "UTC"), run, description });
   }
 
   onApplicationBootstrap() {
     if (!runsWorker()) return;
     for (const task of this.tasks.values()) {
-      const job: CronJob = new CronJob(task.cron, () => void this.runScheduled(task.name, job.lastDate() ?? new Date()));
+      const job: CronJob = CronJob.from({
+        cronTime: task.cron,
+        timeZone: "UTC",
+        onTick: () => void this.runScheduled(task.name, job.lastDate() ?? new Date()),
+      });
       this.registry.addCronJob(task.name, job);
       job.start();
     }
     this.logger.log(`${this.tasks.size} scheduled tasks active`);
+  }
+
+  /** Runs tasks due in the current UTC minute, or the previous minute at a boundary. */
+  async runDue(now = new Date()): Promise<string[]> {
+    const current = slotFor(now);
+    const previous = new Date(current.getTime() - 60_000);
+    const claimed: string[] = [];
+    for (const task of this.tasks.values()) {
+      const slot = [current, previous].find(
+        (candidate) => task.schedule.getNextDateFrom(new Date(candidate.getTime() - 1), "UTC").toMillis() === candidate.getTime(),
+      );
+      if (!slot) continue;
+      if (await this.runScheduled(task.name, slot)) claimed.push(task.name);
+    }
+    return claimed;
   }
 
   /**

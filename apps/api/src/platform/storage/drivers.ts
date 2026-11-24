@@ -1,10 +1,13 @@
+import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 export interface Driver {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
   get(key: string): Promise<Buffer>;
+  getStream(key: string): Promise<Readable>;
   remove(key: string): Promise<void>;
 }
 
@@ -30,6 +33,14 @@ export class LocalDriver implements Driver {
 
   get(key: string) {
     return readFile(this.path(key));
+  }
+
+  getStream(key: string): Promise<Readable> {
+    return new Promise((resolve, reject) => {
+      const stream = createReadStream(this.path(key));
+      stream.once("open", () => resolve(stream));
+      stream.once("error", reject);
+    });
   }
 
   async remove(key: string) {
@@ -88,6 +99,12 @@ export class S3Driver implements Driver {
   async get(key: string) {
     const result = await this.client.send(new GetObjectCommand({ Bucket: this.settings.bucket, Key: key }), { abortSignal: AbortSignal.timeout(TIMEOUT_MS) });
     return Buffer.from(await (result.Body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray());
+  }
+
+  async getStream(key: string): Promise<Readable> {
+    const result = await this.client.send(new GetObjectCommand({ Bucket: this.settings.bucket, Key: key }), { abortSignal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (!result.Body) throw new Error("The storage service returned an empty file body");
+    return result.Body as Readable;
   }
 
   async remove(key: string) {

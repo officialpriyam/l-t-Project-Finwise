@@ -37,15 +37,17 @@ export class FilesController {
   /** Streams a file after checking it belongs to the caller's workspace. */
   @Get(":id")
   async download(@Ctx() ctx: WorkspaceContext, @Param("id", ParseUUIDPipe) id: string, @Res() response: Response, @Query("download") download?: string) {
-    const { file, body } = await this.storage.read(ctx, id);
+    const { file, stream } = await this.storage.open(ctx, id);
     const inline = !download && (file.contentType.startsWith("image/") || file.contentType === "application/pdf");
     response.setHeader("Content-Type", file.contentType);
-    response.setHeader("Content-Length", String(body.length));
+    response.setHeader("Content-Length", String(file.size));
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Cache-Control", "private, max-age=3600");
     response.setHeader("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox");
     response.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${encodeURIComponent(file.filename)}"`);
-    response.end(body);
+    stream.on("error", (error) => response.destroy(error));
+    response.on("close", () => stream.destroy());
+    stream.pipe(response);
   }
 
   @Delete(":id")

@@ -142,40 +142,157 @@ differs. The web container needs only `APP_URL` at runtime, no secrets.
 
 Hosts without long-running processes can skip the worker and call
 `POST /api/system/tick` with header `x-cron-secret: $CRON_SECRET` every
-minute; each call runs one worker pass. Scheduled tasks need a running
-worker, so this mode suits small installs only.
+minute; each call runs one worker pass. Vercel uses the `GET /api/system/cron`
+route below, which also runs due scheduled tasks.
 
-### Vercel (web only)
+### Vercel: web and serverless API
 
-Vercel can host the Next.js web app (`apps/web`) — not the API and not the
-worker: both are long-lived processes with a PostgreSQL pool, an in-process
-scheduler and a job queue. Run the API + worker on any long-running host
-(Render, Railway, Fly.io, a Docker box — see above) against the same database,
-and point the web at it.
+Vercel can host both applications as **two projects imported from the same
+repository**. The Next.js web runs from `apps/web`; the NestJS API runs as a
+Fluid Compute function from `apps/api/src/main.ts`. That entrypoint uses the
+same HTTP setup as the persistent API, but disables the worker loop, scheduler
+timers and AI polling. Vercel Cron invokes due schedules and drains the
+PostgreSQL-backed job queue instead.
 
-1. Import the repository and set **Root Directory** to `apps/web`. The
-   `vercel.json` there pins the framework and build command; pnpm walks up to
-   the workspace root. If the build cannot resolve `@finwise/core`, enable
-   *Build & Development → Include source files outside of the Root Directory*.
-2. Choose Node 24 and set these variables for Production — *before* the first
-   build, because `next.config.ts` compiles `API_INTERNAL_URL` into the bundle:
+Plan requirements and limits:
 
-   | Variable | Value |
-   |---|---|
-   | `APP_URL` | `https://<project>.vercel.app` (or your custom domain) |
-   | `API_INTERNAL_URL` | `https://<api-host>` — public HTTPS, no `/api` suffix |
-   | `NEXT_TELEMETRY_DISABLED` | `1` (optional) |
+- Minute cron requires **Pro or Enterprise**. Hobby permits daily cron only,
+  so it cannot provide the normal job and schedule cadence.
+- The app accepts uploads up to **12 MB**, above Vercel's default 4.5 MB
+  function request-body limit. Larger requests require **Fluid Compute,
+  Pro/Enterprise, 4 GB Performance memory, the Node.js runtime** and
+  `VERCEL_SUPPORT_LARGE_REQUEST_BODY=1` for Vercel's 20 MiB request-body beta.
+- Downloads are streamed, so they are not subject to the default 4.5 MB
+  non-streamed response limit.
+- Vercel has no durable local filesystem. Use S3/R2 through `STORAGE_DRIVER=s3`
+  or **Admin → Storage**; local uploads return a clear 503 on Vercel.
+- The standard 250 MB uncompressed function-bundle limit, cold starts and the
+  configured 300-second function duration still apply.
 
-3. On the API host, set `APP_URL` to the same Vercel origin and
-   `TRUST_PROXY=true`. Better Auth (`baseURL`, `trustedOrigins`) and the CSRF
-   origin check compare against `APP_URL`; a mismatch breaks sign-in and
-   cookie-authenticated writes.
-4. No database or provider secrets belong on Vercel: the browser and Server
-   Components only call `/api/*`, which Vercel rewrites to the API. Uploads,
-   AI calls, email and jobs all happen on the API host as usual.
+#### 1. Prepare the database
 
-Preview deployments have a different origin and will not sign in; test auth
-on the production domain.
+Use managed PostgreSQL (Neon is a good fit for serverless connection pooling).
+Apply migrations from a trusted checkout **before** deploying or serving the
+new release, using the provider's direct, non-pooled connection string:
+
+```bash
+DATABASE_URL='postgres://…?sslmode=require' pnpm --filter @finwise/api migrate:prod
+```
+
+Do not run migrations from a Vercel build. `/api/health/ready` stays 503 while
+migrations are pending. Keep `BETTER_AUTH_SECRET` and `ENCRYPTION_KEY` identical
+to any existing deployment; changing either has the consequences described
+under [Key rotation](#key-rotation).
+
+#### 2. Create the API project
+
+Import the repository as **FinWise API** and set **Root Directory** to
+`apps/api`. Its `vercel.json` selects Vercel's NestJS builder, sets
+`src/main.ts` to a 300-second function and declares the minute cron:
+
+```json
+{ "path": "/api/system/cron", "schedule": "* * * * *" }
+```
+
+Choose Node 24. If pnpm cannot resolve `@finwise/core`, enable *Build &
+Development → Include source files outside of the Root Directory*. Set these
+variables for Production **before** the first build:
+
+| Variable | Value |
+|---|---|
+| `APP_URL` | Final public web origin, e.g. `https://books.example.com` |
+| `DATABASE_URL` | Managed PostgreSQL **pooled** connection string |
+| `DATABASE_POOL_MAX` | `1` to start; raise only within the database's connection budget |
+| `BETTER_AUTH_SECRET` | Existing 32+ byte secret |
+| `ENCRYPTION_KEY` | Existing base64-encoded 32-byte key |
+| `ADMIN_EMAILS` | Comma-separated platform-admin addresses |
+| `RUN_WORKER_IN_PROCESS` | `false` |
+| `EW_DISABLE_WORKER` | `1` (the serverless entrypoint also enforces this) |
+| `CRON_SECRET` | Random header-safe value of at least 16 characters, e.g. `openssl rand -hex 24` |
+| `TRUST_PROXY` | `1` |
+| `STORAGE_DRIVER`, `S3_*` | S3/R2 settings, unless **Admin → Storage** is configured |
+| `RESEND_API_KEY`, `EMAIL_FROM`, `SUPPORT_EMAIL` | Production email settings |
+| AI, Google OAuth and Sentry variables | As needed; secrets stay in this API project only |
+| `VERCEL_SUPPORT_LARGE_REQUEST_BODY` | `1` when using the Pro/Enterprise 20 MiB request-body beta |
+
+Enable **Fluid Compute** and, for uploads above 4.5 MB, select **4 GB
+Performance memory**. Deploy the API and confirm `https://<api-project>.vercel.app/api/health/ready`
+returns ready. The API is public because the web proxy reaches it over HTTPS;
+authentication and workspace authorization still protect application routes.
+
+#### 3. Create the web project
+
+Import the repository again as **FinWise Web**, set **Root Directory** to
+`apps/web`, and choose Node 24. Enable inclusion of source files outside the
+Root Directory if needed. Set these Production variables before building,
+because `next.config.ts` compiles `API_INTERNAL_URL` into the web bundle:
+
+| Variable | Value |
+|---|---|
+| `APP_URL` | The same final public web origin used by the API |
+| `API_INTERNAL_URL` | `https://<api-project>.vercel.app` or the API custom domain — public HTTPS, **no `/api` suffix** |
+| `NEXT_TELEMETRY_DISABLED` | `1` (optional) |
+
+Do **not** put `DATABASE_URL`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, AI keys,
+storage credentials or `CRON_SECRET` in the web project. The browser only calls
+the web origin; Next.js proxies `/api/*` to the API so Better Auth cookies stay
+first-party.
+
+#### 4. Cron and background work
+
+With `CRON_SECRET` set, Vercel Cron calls `GET /api/system/cron` with
+`Authorization: Bearer <CRON_SECRET>`. The route rejects missing or incorrect
+credentials with 401, runs schedules due in the current UTC minute (or the
+previous minute when a request crosses a boundary), then drains queued events
+and jobs until empty or its 240-second internal deadline. Its response is a
+small summary such as `{ "scheduled": 1, "events": 1, "jobs": 1 }`.
+
+Cron delivery is best effort: invocations can be duplicated or missed, and
+Vercel does not retry failed calls. Existing `scheduler_run` slot claims and
+`FOR UPDATE SKIP LOCKED` job claims make duplicate deliveries harmless. This
+runner does not replay schedules missed during a longer outage; rerun work from
+**Admin → Jobs**, or restore a persistent worker if that is required. The
+legacy `POST /api/system/tick` endpoint with `x-cron-secret` remains available
+for other hosts.
+
+#### 5. Storage, uploads and upgrades
+
+Configure a private S3/R2 bucket in **Admin → Storage** or with the API
+project's `STORAGE_DRIVER=s3` and `S3_*` variables. Files are authorized against
+their workspace metadata row before the API streams them. Existing local files
+must be copied to the bucket before switching a serverless deployment to it.
+
+For each later release, run `migrate:prod` against the direct database host
+before deploying. Keep migrations backward compatible with the previous API
+release. After deployment, check `/api/health/ready`, the API project's Cron
+logs, **Admin → Jobs**, and a real upload/download.
+
+#### Troubleshooting
+
+- **Sign-in or cookie-authenticated writes fail:** `APP_URL` must exactly match
+  the browser-facing web origin on both projects, with no path or trailing
+  slash. `API_INTERNAL_URL` points at the API origin without `/api`.
+- **Cron returns 401:** set the same strong `CRON_SECRET` in the API project;
+  manual calls need the exact `Authorization: Bearer <secret>` header. Check
+  the API project's Cron logs, not only the web project's logs.
+- **Cron never runs on Hobby:** minute schedules are a Pro/Enterprise feature.
+  A daily schedule can be used on Hobby, but most recurring work will be late.
+- **Uploads return 503:** configure S3/R2. Vercel cannot use the local driver.
+- **Uploads return 413:** the request exceeds the platform limit. Confirm the
+  Pro/Enterprise plan, Fluid Compute, 4 GB Performance memory, Node runtime and
+  large-body beta variable; the application's own cap remains 12 MB.
+- **Readiness returns 503:** apply pending migrations to the database named by
+  `DATABASE_URL` and check database connectivity.
+- **Database connection errors:** lower `DATABASE_POOL_MAX` or increase the
+  managed database's connection budget; each warm function can open a pool.
+- **Admin → AI changes seem delayed:** serverless functions do not poll in the
+  background. Warm instances refresh stale provider configuration before an AI
+  call, with a 30-second freshness window.
+
+Preview deployments have a different origin and will not sign in against a
+production `APP_URL`; test authentication on the production domain. Previews
+also use whichever API URL was compiled into their build, so do not point
+untrusted previews at production data.
 
 ## Database
 

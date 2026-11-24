@@ -210,11 +210,11 @@ Put a TLS reverse proxy in front of the web container. Health checks: `GET /api/
 
 - 📘 [docs/deploy.md](./docs/deploy.md) — environment, managed PostgreSQL, backups and restore drills, R2/S3 storage, email (SPF/DKIM), payment webhooks, scaling, upgrades, key rotation, monitoring.
 - 🚀 [docs/dokploy.md](./docs/dokploy.md) — deploying on Dokploy.
-- ▲ **Vercel:** the web app ships from `apps/web` (its `vercel.json` is there; set Root Directory to `apps/web`, `APP_URL` to the Vercel origin and `API_INTERNAL_URL` to the public API). The API and worker stay on a long-running host — see [Vercel (web only)](./docs/deploy.md#vercel-web-only).
+- ▲ **Vercel:** deploy both apps as two projects from this repository — web Root Directory `apps/web`, API Root Directory `apps/api`. Set the web's `API_INTERNAL_URL` to the public API origin and use the same `APP_URL` on both. See [Vercel: web and serverless API](./docs/deploy.md#vercel-web-and-serverless-api).
 
-**Storage:** `STORAGE_DRIVER=local` or any S3-compatible store (AWS S3, Cloudflare R2, MinIO). PostgreSQL holds only metadata; files are served only to members of their workspace.
+**Storage:** `STORAGE_DRIVER=local` or any S3-compatible store (AWS S3, Cloudflare R2, MinIO). PostgreSQL holds only metadata; files are served only to members of their workspace. Vercel requires S3/R2 because its filesystem is not durable.
 
-**Background work:** the API runs the worker in-process by default. To scale out set `RUN_WORKER_IN_PROCESS=false` and run `pnpm worker` — any number of workers share the PostgreSQL queue, and each scheduled task runs once per slot. Hosts without long-running processes can call `POST /api/system/tick` with `x-cron-secret`.
+**Background work:** the API runs the worker in-process by default. To scale out set `RUN_WORKER_IN_PROCESS=false` and run `pnpm worker` — any number of workers share the PostgreSQL queue, and each scheduled task runs once per slot. On Vercel, the serverless entrypoint disables timers and `GET /api/system/cron` runs due schedules and drains the queue; minute cron requires Pro/Enterprise. Other short-lived hosts can call `POST /api/system/tick` with `x-cron-secret`.
 
 ### Desktop app (Windows MSI)
 

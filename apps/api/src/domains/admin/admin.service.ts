@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { and, count, desc, eq, gte, ilike, or, sql } from "drizzle-orm";
+import { env } from "../../kernel/env.js";
 import { db } from "../../platform/data/index.js";
 import {
   aiUsage,
@@ -14,10 +15,10 @@ import {
   workspaceMembers,
   workspaces,
 } from "../../platform/data/schema/index.js";
-import { env } from "../../kernel/env.js";
-import { aiRuntime } from "../intelligence/gateway/router.provider.js";
 import { SchedulerService } from "../../platform/jobs/scheduler.service.js";
+import { workerMode } from "../../platform/jobs/worker-mode.js";
 import { loadStorageConfig } from "../../platform/storage/storage-config.js";
+import { aiRuntime } from "../intelligence/gateway/router.provider.js";
 import { EventsService } from "../ops/events.service.js";
 import { JobsService } from "../ops/jobs.service.js";
 import { PlatformAuditService } from "../ops/platform-audit.service.js";
@@ -81,7 +82,7 @@ export class AdminService {
         : env.STORAGE_DRIVER === "s3"
           ? `S3 · ${env.S3_BUCKET} (.env)`
           : "Server disk (.env)",
-      worker: env.RUN_WORKER_IN_PROCESS ? "in-process" : "external",
+      worker: workerMode(),
       signUp: env.ALLOW_SIGN_UP ? "open" : "closed",
     };
   }

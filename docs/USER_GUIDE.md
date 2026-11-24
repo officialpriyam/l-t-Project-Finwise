@@ -564,16 +564,18 @@ Use **Help & support** in the app or the public **Contact** page. Include the sc
 
 ## 17. Self-hosting and deployment in one page
 
-The web, API and database are separate processes.
+The web, API and database are separate deployable parts.
 
-- **Web** — Next.js, port 3100. It can be hosted on Vercel.
-- **API** — NestJS, port 4100. It must run on a long-lived host such as Render, Railway, Fly or Docker.
-- **Worker** — runs jobs and schedules; it can run inside the API process or as a second service.
+- **Web** — Next.js, port 3100 locally. It can be hosted on Vercel.
+- **API** — NestJS, port 4100 locally. It can run on Vercel as a serverless function or on a long-lived host such as Render, Railway, Fly or Docker.
+- **Worker** — runs jobs and schedules. Persistent installs run it inside the API or as a second service; Vercel invokes it through a secured cron endpoint instead of keeping timers alive.
 - **Database** — PostgreSQL. Local embedded PostgreSQL or Docker works for development; Neon or another managed PostgreSQL works for production.
 
-Vercel cannot run the API or worker because they hold long-lived database pools and job loops. Put the Next.js web on Vercel, host the API separately, and point `API_INTERNAL_URL` at the API's public HTTPS origin with **no `/api` suffix**. Set `APP_URL` to the public web origin on both sides. Do not send database passwords or AI keys to Vercel.
+For full-stack Vercel hosting, create two projects from the same repository: one with Root Directory `apps/web`, the other with `apps/api`. Point the web's `API_INTERNAL_URL` at the API's public HTTPS origin with **no `/api` suffix**, and set `APP_URL` to the public web origin on both. Database passwords, auth/encryption secrets, AI keys and the cron secret belong only in the API project, never the web project.
 
-The full checklist is in [docs/deploy.md](deploy.md).
+Vercel needs S3/R2 for uploads, managed PostgreSQL, and `CRON_SECRET` for `GET /api/system/cron`. Minute cron requires Pro or Enterprise; Hobby allows daily cron only. Uploads above Vercel's default 4.5 MB request limit need its Pro/Enterprise large-body beta configuration. Apply database migrations before deployment rather than during a Vercel build.
+
+The full checklist, environment tables and troubleshooting are in [docs/deploy.md](deploy.md#vercel-web-and-serverless-api).
 
 ---
 

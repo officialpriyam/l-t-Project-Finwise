@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { OpenAiCompatibleProvider, readJson } from "../../src/domains/intelligence/gateway/openai-compatible.provider.js";
 import { capabilitiesFor } from "../../src/domains/intelligence/gateway/presets.js";
 import { resolvePrice } from "../../src/domains/intelligence/gateway/pricing.js";
-import { encryptAiKey, RoutingProvider, resolveAiConfig } from "../../src/domains/intelligence/gateway/router.provider.js";
+import { encryptAiKey, type ResolvedConfig, RoutingProvider, resolveAiConfig } from "../../src/domains/intelligence/gateway/router.provider.js";
 import { AiProviderError, type ExtractionHints } from "../../src/domains/intelligence/gateway/types.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const hints: ExtractionHints = {
   today: "2026-09-26",
@@ -267,6 +271,54 @@ describe("routing", () => {
       "https://api.deepseek.com/v1/chat/completions",
     ]);
     expect(calls[0]?.headers.authorization).toBe("Bearer gm-key");
+  });
+
+  it("refreshes stale configuration lazily and shares one refresh across concurrent calls", async () => {
+    const { fetch } = scripted([{ body: reply("Fine.") }]);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const router = new RoutingProvider({ fetch });
+    const resolved = await config(false);
+    router.apply(resolved);
+    const refresh = vi.spyOn(router, "refresh");
+
+    await router.generate({ system: "s", prompt: "p" });
+    expect(refresh).not.toHaveBeenCalled();
+
+    clock.mockReturnValue(31_000);
+    let release!: (value: ResolvedConfig) => void;
+    const pending = new Promise<ResolvedConfig>((resolve) => {
+      release = resolve;
+    });
+    refresh.mockImplementation(() => pending);
+    const calls = [
+      router.generate({ system: "s", prompt: "one" }),
+      router.generate({ system: "s", prompt: "two" }),
+      router.generate({ system: "s", prompt: "three" }),
+    ];
+    expect(refresh).toHaveBeenCalledTimes(1);
+    release(resolved);
+    await Promise.all(calls);
+  });
+
+  it("checks freshness before extraction, classification, generation and tool calls", async () => {
+    const { fetch } = scripted([
+      { body: reply(JSON.stringify(extraction)) },
+      { body: reply(JSON.stringify({ items: [] })) },
+      { body: reply("Fine.") },
+      { body: reply("Fine.") },
+    ]);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const router = new RoutingProvider({ fetch });
+    const resolved = await config(false);
+    router.apply(resolved);
+    const refresh = vi.spyOn(router, "refresh").mockResolvedValue(resolved);
+    clock.mockReturnValue(31_000);
+
+    await router.extract({ kind: "text", text: "250 tk lunch", hints });
+    await router.classify({ items: [], categories: [], projects: [], workspaceKind: "personal" });
+    await router.generate({ system: "s", prompt: "p" });
+    await router.runWithTools({ system: "s", messages: [{ role: "user", content: "Hello" }], tools: [] });
+    expect(refresh).toHaveBeenCalledTimes(4);
   });
 
   it("explains, without calling anyone, when no model can read an image", async () => {

@@ -11,3 +11,7 @@ if (testUrl === process.env.DATABASE_URL && !testUrl.includes("test")) {
 process.env.DATABASE_URL = testUrl;
 process.env.EW_DISABLE_WORKER = "1";
 process.env.NODE_ENV = "test";
+// Never let a developer's live .env keys turn integration tests into provider calls.
+process.env.AI_PROVIDER = "none";
+process.env.AI_VISION_PROVIDER = "none";
+process.env.OPENROUTER_FALLBACK_MODEL = "";

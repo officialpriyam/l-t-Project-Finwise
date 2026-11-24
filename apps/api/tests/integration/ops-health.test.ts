@@ -7,15 +7,15 @@ import { Test } from "@nestjs/testing";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../../src/bootstrap/app.module.js";
-import { auth } from "../../src/platform/identity/auth.js";
+import { readiness } from "../../src/domains/ops/health.controller.js";
+import { readHeartbeat, recordHeartbeat, resetHeartbeatThrottle } from "../../src/domains/ops/heartbeat.js";
+import { env } from "../../src/kernel/env.js";
 import { configureHttpServer } from "../../src/kernel/http-server.js";
 import { AppLogger } from "../../src/kernel/logger.js";
 import { closeDb, db } from "../../src/platform/data/index.js";
 import { migrationStatus, migrationsFolder, pendingMigrations, readJournal } from "../../src/platform/data/migrations.js";
 import { users } from "../../src/platform/data/schema/index.js";
-import { env } from "../../src/kernel/env.js";
-import { readiness } from "../../src/domains/ops/health.controller.js";
-import { readHeartbeat, recordHeartbeat, resetHeartbeatThrottle } from "../../src/domains/ops/heartbeat.js";
+import { auth } from "../../src/platform/identity/auth.js";
 import { resetDatabase } from "./harness.js";
 
 // The operational surface over real HTTP, with the same Express stack as
@@ -160,7 +160,7 @@ describe("admin system view", () => {
       migrations: { pending: [] },
       ai: { provider: expect.any(String) },
       storage: expect.any(String),
-      worker: { mode: expect.stringMatching(/in-process|external/), heartbeat: { instance: "worker-host:123", healthy: true } },
+      worker: { mode: expect.stringMatching(/in-process|external|cron/), heartbeat: { instance: "worker-host:123", healthy: true } },
       observability: { errorReporting: false },
     });
   });

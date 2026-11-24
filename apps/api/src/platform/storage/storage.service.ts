@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
+import type { Readable } from "node:stream";
 import { type StorageBackend, uuidv7 } from "@finwise/core";
 import { Inject, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { and, asc, eq, gt, isNotNull, isNull, ne, or, type SQL } from "drizzle-orm";
-import type { WorkspaceContext } from "../../kernel/context.js";
-import { assertFound, badRequest, DomainError } from "../../kernel/errors.js";
-import { db, type Executor } from "../data/index.js";
-import { files } from "../data/schema/index.js";
-import { env } from "../../kernel/env.js";
 import { EntitlementsService } from "../../domains/billing/entitlements.service.js";
 import { AuditService } from "../../domains/ops/audit.service.js";
 import { JobsService } from "../../domains/ops/jobs.service.js";
+import type { WorkspaceContext } from "../../kernel/context.js";
+import { env } from "../../kernel/env.js";
+import { assertFound, badRequest, DomainError } from "../../kernel/errors.js";
+import { db, type Executor } from "../data/index.js";
+import { files } from "../data/schema/index.js";
 import { type Driver, describeStorageError, LocalDriver, S3Driver, type S3Settings } from "./drivers.js";
 import { envS3Settings, loadStorageConfig } from "./storage-config.js";
 
@@ -71,6 +72,9 @@ export class StorageService implements OnModuleInit {
     if (saved) {
       if (!saved.settings) throw unavailable(`File storage isn't working: ${saved.problem} (Admin → Storage)`);
       return { backend: "admin", prefix: saved.stored.prefix };
+    }
+    if (process.env.VERCEL && defaultBackend() === "local") {
+      throw unavailable("Vercel has no durable file storage. Configure S3 or Cloudflare R2 in Admin → Storage, or set STORAGE_DRIVER=s3.");
     }
     return { backend: defaultBackend(), prefix: null };
   }
@@ -180,6 +184,15 @@ export class StorageService implements OnModuleInit {
     const driver = await this.driver(backend);
     const body = await driver.get(file.storageKey).catch((error) => this.fail(backend, "open the file", error));
     return { file, body };
+  }
+
+  /** Opens an authorized file stream for an HTTP download. */
+  async open(ctx: Pick<WorkspaceContext, "workspaceId">, id: string): Promise<{ file: FileRow; stream: Readable }> {
+    const file = await this.meta(ctx, id);
+    const backend = backendOf(file);
+    const driver = await this.driver(backend);
+    const stream = await driver.getStream(file.storageKey).catch((error) => this.fail(backend, "open the file", error));
+    return { file, stream };
   }
 
   async remove(ctx: WorkspaceContext, id: string) {

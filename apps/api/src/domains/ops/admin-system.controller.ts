@@ -1,12 +1,13 @@
 import { Controller, Get, UseGuards } from "@nestjs/common";
 import { desc, sql } from "drizzle-orm";
+import { env } from "../../kernel/env.js";
 import { appVersion, errorReporter } from "../../kernel/error-reporter.js";
 import { AdminGuard } from "../../kernel/guards.js";
 import { db } from "../../platform/data/index.js";
 import { schedulerRuns } from "../../platform/data/schema/index.js";
-import { env } from "../../kernel/env.js";
-import { aiRuntime } from "../intelligence/gateway/router.provider.js";
+import { workerMode } from "../../platform/jobs/worker-mode.js";
 import { loadStorageConfig } from "../../platform/storage/storage-config.js";
+import { aiRuntime } from "../intelligence/gateway/router.provider.js";
 import { readiness } from "./health.controller.js";
 import { readHeartbeat } from "./heartbeat.js";
 
@@ -43,7 +44,7 @@ export class AdminSystemController {
       ready: ready.ready,
       ai: { provider: aiRuntime.provider, model: aiRuntime.model, source: aiRuntime.source },
       storage: storage?.stored.provider ?? env.STORAGE_DRIVER,
-      worker: { mode: env.RUN_WORKER_IN_PROCESS ? "in-process" : "external", heartbeat },
+      worker: { mode: workerMode(), heartbeat },
       schedules,
       observability: { errorReporting: errorReporter().enabled, logFormat: env.LOG_FORMAT, trustProxy: env.TRUST_PROXY },
     };

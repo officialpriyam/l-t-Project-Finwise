@@ -1,28 +1,45 @@
 import { timingSafeEqual } from "node:crypto";
-import { Controller, Global, Headers, HttpCode, Inject, Module, type OnModuleInit, Post } from "@nestjs/common";
-import { unauthorized } from "../../kernel/errors.js";
-import { Public } from "../../kernel/guards.js";
-import { env } from "../../kernel/env.js";
+import { Controller, Get, Global, Headers, HttpCode, Inject, Module, type OnModuleInit, Post } from "@nestjs/common";
 import { EventsService } from "../../domains/ops/events.service.js";
 import { JobsService } from "../../domains/ops/jobs.service.js";
 import { pruneRateLimits } from "../../domains/ops/rate-limit.js";
+import { env } from "../../kernel/env.js";
+import { unauthorized } from "../../kernel/errors.js";
+import { Public } from "../../kernel/guards.js";
 import { SchedulerService } from "./scheduler.service.js";
 import { WorkerService } from "./worker.service.js";
 
+function secretMatches(provided: string | undefined, expected: string | undefined): boolean {
+  if (!provided || !expected) return false;
+  const actual = Buffer.from(provided);
+  const wanted = Buffer.from(expected);
+  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+}
+
 @Controller("system")
 export class SystemTickController {
-  constructor(@Inject(WorkerService) private readonly worker: WorkerService) {}
+  constructor(
+    @Inject(WorkerService) private readonly worker: WorkerService,
+    @Inject(SchedulerService) private readonly scheduler: SchedulerService,
+  ) {}
 
   /** For hosts without a long-running worker: an external cron calls this. */
   @Post("tick")
   @Public()
   @HttpCode(200)
   tick(@Headers("x-cron-secret") secret: string | undefined) {
-    const expected = env.CRON_SECRET;
-    if (!expected || !secret || secret.length !== expected.length || !timingSafeEqual(Buffer.from(secret), Buffer.from(expected))) {
-      throw unauthorized("Invalid cron secret");
-    }
+    if (!secretMatches(secret, env.CRON_SECRET)) throw unauthorized("Invalid cron secret");
     return this.worker.tick();
+  }
+
+  /** Vercel Cron: run due schedules, then drain the durable queue. */
+  @Get("cron")
+  @Public()
+  async cron(@Headers("authorization") authorization: string | undefined) {
+    if (!secretMatches(authorization, env.CRON_SECRET ? `Bearer ${env.CRON_SECRET}` : undefined)) throw unauthorized("Invalid cron secret");
+    const scheduled = await this.scheduler.runDue();
+    const worker = await this.worker.drain();
+    return { scheduled: scheduled.length, tasks: scheduled, ...worker };
   }
 }
 

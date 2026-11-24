@@ -8,6 +8,6 @@ import type { AiProvider } from "./types.js";
 export async function createAiProvider(): Promise<AiProvider> {
   const provider = new RoutingProvider();
   await provider.refresh();
-  if (process.env.NODE_ENV !== "test") provider.startPolling();
+  if (process.env.NODE_ENV !== "test" && !process.env.VERCEL) provider.startPolling();
   return provider;
 }

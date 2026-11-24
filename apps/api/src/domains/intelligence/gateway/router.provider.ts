@@ -1,9 +1,9 @@
 import type { AiCapabilities, AiProviderId, AiStructuredMode } from "@finwise/core";
 import { Logger } from "@nestjs/common";
 import { eq } from "drizzle-orm";
+import { env, envKey } from "../../../kernel/env.js";
 import { db } from "../../../platform/data/index.js";
 import { platformSettings } from "../../../platform/data/schema/index.js";
-import { env, envKey } from "../../../kernel/env.js";
 import { decryptSecret, encryptSecret } from "../../integrations/crypto.js";
 import { AnthropicProvider } from "./anthropic.provider.js";
 import { NoopProvider } from "./noop.provider.js";
@@ -61,6 +61,7 @@ export type ResolvedConfig = {
 };
 
 const aad = (slot: "primary" | "vision") => `platform:ai:${slot}`;
+const REFRESH_AFTER_MS = 30_000;
 export const encryptAiKey = (key: string, slot: "primary" | "vision") => encryptSecret(key, { aad: aad(slot) });
 
 function resolveModel(stored: StoredModel, slot: "primary" | "vision", fromAdmin: boolean): ResolvedModel | string {
@@ -199,8 +200,9 @@ export const aiRuntime = { provider: "none", model: null as string | null, avail
  * The AI_PROVIDER the gateway calls. It holds the active configuration (saved
  * in Admin → AI, or from .env), builds the client for it, and routes each call:
  * screenshots and PDFs to a model that can read them, everything else to the
- * primary model. It reloads every 30 seconds so other processes (workers) pick
- * up an admin's change, and at once in the process that saved it.
+ * primary model. Long-running processes poll every 30 seconds so other workers
+ * pick up an admin's change; serverless calls refresh lazily, and the process
+ * that saved the configuration still refreshes at once.
  */
 export class RoutingProvider implements AiProvider {
   private readonly logger = new Logger("AiProvider");
@@ -211,6 +213,8 @@ export class RoutingProvider implements AiProvider {
   private fallbackInfo: { provider: string; model: string; capabilities: ResolvedModel["capabilities"] } | null = null;
   private timer: NodeJS.Timeout | null = null;
   private loaded = false;
+  private lastRefreshAt = 0;
+  private lazyRefresh: Promise<ResolvedConfig> | null = null;
 
   constructor(private readonly deps: ProviderDeps = {}) {}
 
@@ -243,6 +247,7 @@ export class RoutingProvider implements AiProvider {
 
   apply(config: ResolvedConfig) {
     this.loaded = true;
+    this.lastRefreshAt = Date.now();
     const changed = JSON.stringify(summary(config)) !== JSON.stringify(summary(this.config));
     this.config = config;
     this.primary = config.primary ? buildProvider(config.primary, this.deps) : new NoopProvider(config.reason ?? "AI is not configured");
@@ -270,6 +275,16 @@ export class RoutingProvider implements AiProvider {
   stopPolling() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  private async ensureFresh(): Promise<void> {
+    if (this.loaded && Date.now() - this.lastRefreshAt < REFRESH_AFTER_MS) return;
+    if (!this.lazyRefresh) {
+      this.lazyRefresh = this.refresh().finally(() => {
+        this.lazyRefresh = null;
+      });
+    }
+    await this.lazyRefresh;
   }
 
   /** The model that can read this input, or a plain explanation of why none can. */
@@ -305,27 +320,33 @@ export class RoutingProvider implements AiProvider {
       return await call();
     } catch (error) {
       if (!retry || !this.fallbackInfo || !(error instanceof AiProviderError) || !error.retryable) throw error;
-      this.logger.warn(`${label} failed on ${this.name} (${error.kind}: ${error.message}); retrying on ${this.fallbackInfo.provider} · ${this.fallbackInfo.model}`);
+      this.logger.warn(
+        `${label} failed on ${this.name} (${error.kind}: ${error.message}); retrying on ${this.fallbackInfo.provider} · ${this.fallbackInfo.model}`,
+      );
       const result = await retry();
       return { ...result, provider: this.fallbackInfo.provider };
     }
   }
 
   async extract(input: ExtractInput): Promise<ProviderResult<ExtractionOutput>> {
+    await this.ensureFresh();
     const primary = this.reader(input);
     const fallback = this.fallbackReader(input);
     return this.withFallback("extract", () => primary.extract(input), fallback ? () => fallback.extract(input) : null);
   }
 
-  classify(input: ClassifyInput): Promise<ProviderResult<ClassificationOutput>> {
+  async classify(input: ClassifyInput): Promise<ProviderResult<ClassificationOutput>> {
+    await this.ensureFresh();
     return this.withFallback("classify", () => this.primary.classify(input), this.fallback ? () => (this.fallback as AiProvider).classify(input) : null);
   }
 
-  generate(input: GenerateInput): Promise<ProviderResult<{ text: string }>> {
+  async generate(input: GenerateInput): Promise<ProviderResult<{ text: string }>> {
+    await this.ensureFresh();
     return this.withFallback("generate", () => this.primary.generate(input), this.fallback ? () => (this.fallback as AiProvider).generate(input) : null);
   }
 
   async runWithTools(input: ToolRunInput): Promise<ProviderResult<ToolRunOutput>> {
+    await this.ensureFresh();
     if (this.config.primary && !this.config.primary.capabilities.tools) {
       throw new AiProviderError("bad_request", `${this.config.primary.model} can't use tools; the copilot answers from its built-in readings instead.`);
     }
